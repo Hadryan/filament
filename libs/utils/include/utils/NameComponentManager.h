@@ -49,6 +49,13 @@ private:
 } // namespace details
 
 
+/**
+ * Allows clients to associate string labels with entities.
+ *
+ * Usage example:
+ *
+ * TODO: show set and get
+ */
 class NameComponentManager : public SingleInstanceComponentManager<details::SafeString> {
 public:
     using Instance = EntityInstance<NameComponentManager>;

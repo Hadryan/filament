@@ -43,6 +43,37 @@ class FRenderPrimitive;
 class FRenderableManager;
 } // namespace details
 
+/**
+ * Factory and manager for \c renderable components, which are entities that can be drawn.
+ *
+ * Renderables are bundles of \em primitives, each of which can have its own geometry
+ * and materials. All primitives in a particular renderable share a set of rendering
+ * attributes, such as whether they cast shadows or use vertex skinning.
+ *
+ * Usage example:
+ *
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * auto renderable = utils::EntityManager::get().create();
+ *
+ * RenderableManager::Builder(1)
+ *         .boundingBox({{ -1, -1, -1 }, { 1, 1, 1 }})
+ *         .material(0, matInstance)
+ *         .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, vertBuffer, indBuffer, 0, 3)
+ *         .receiveShadows(false)
+ *         .build(engine, renderable);
+ *
+ * scene->addEntity(renderable);
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * To modify the state of an existing renderable, clients should first use RenderableManager
+ * to get a temporary handle called an \em instance. The instance can then be used to get or set
+ * the renderable's state. Please note that instances are ephemeral; clients should store entities,
+ * not instances.
+ *
+ * - For details about constructing renderables, see RenderableManager::Builder.
+ * - To associate a 4x4 transform with a renderable entity, see TransformManager.
+ * - To associate a human-readable label with a renderable entity, see utils::NameComponentManager.
+ */
 class UTILS_PUBLIC RenderableManager : public FilamentAPI {
     struct BuilderDetails;
 
@@ -50,47 +81,179 @@ public:
     using Instance = utils::EntityInstance<RenderableManager>;
     using PrimitiveType = backend::PrimitiveType;
 
+    /**
+     * Checks if the given entity already has a renderable component.
+     */
     bool hasComponent(utils::Entity e) const noexcept;
 
+    /**
+     * Gets a temporary handle that can be used to access the renderable state.
+     *
+     * @return Non-zero handle if the entity has a renderable component, 0 otherwise.
+     */
     Instance getInstance(utils::Entity e) const noexcept;
 
+    /**
+     * The transformation associated with a skinning joint.
+     *
+     * Clients can specify bones either using this quat-vec3 pair, or by using 4x4 matrices.
+     */
     struct Bone {
         math::quatf unitQuaternion = { 1, 0, 0, 0 };
         math::float3 translation = { 0, 0, 0 };
         float reserved = 0;
     };
 
+    /**
+     * Adds renderable components to entities using a builder pattern.
+     */
     class Builder : public BuilderBase<BuilderDetails> {
         friend struct BuilderDetails;
     public:
         enum Result { Error = -1, Success = 0  };
+
+        /**
+         * Creates a builder for renderable components.
+         *
+         * @param count the number of primitives that will be supplied to the builder.
+         *
+         * Note that builders typically do not have a long lifetime since clients should discard
+         * them after calling build().
+         */
         explicit Builder(size_t count) noexcept;
+
+        /*! \cond PRIVATE */
         Builder(Builder const& rhs) = delete;
         Builder(Builder&& rhs) noexcept;
         ~Builder() noexcept;
         Builder& operator=(Builder& rhs) = delete;
         Builder& operator=(Builder&& rhs) noexcept;
+        /*! \endcond */
 
-        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices) noexcept;
-        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices, size_t offset, size_t count) noexcept;
+        /**
+         * Specifies the geometry data for a primitive.
+         *
+         * Filament primitives must have an associated VertexBuffer and IndexBuffer. Typically,
+         * each primitive is specified by calling \c geometry(...) and \c material(...) on the
+         * Builder.
+         *
+         * @param index zero-based index of the primitive, must be less than the count passed to Builder constructor
+         * @param type specifies the topology of the primitive (e.g., \c RenderableManager::PrimitiveType::TRIANGLES)
+         * @param vertices specifies the vertex buffer, which in turn specifies a set of attributes
+         * @param indices specifies the index buffer (either u16 or u32)
+         * @param offset specifies where in the index buffer to start reading (expressed as a number of bytes)
+         * @param minIndex specifies the minimum index contained in the index buffer
+         * @param maxIndex specifies the maximum index contained in the index buffer
+         * @param count number of indices to read (for triangles, this should be a multiple of 3)
+         */
         Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices, size_t offset, size_t minIndex, size_t maxIndex, size_t count) noexcept;
-        Builder& material(size_t index, MaterialInstance const* materialInstance) noexcept;
-        // The axis aligned bounding box of the Renderable. Mandatory unless culling is disabled.
-        Builder& boundingBox(const Box& axisAlignedBoundingBox) noexcept;
-        // See View::setVisibleLayers().
-        Builder& layerMask(uint8_t select, uint8_t values) noexcept;
-        // The priority is clamped to the range [0..7], defaults to 4; 7 is lowest priority
-        Builder& priority(uint8_t priority) noexcept;
-        Builder& culling(bool enable) noexcept; // true by default
-        Builder& castShadows(bool enable) noexcept; // false by default
-        Builder& receiveShadows(bool enable) noexcept; // true by default
-        Builder& skinning(size_t boneCount) noexcept; // 0 by default, 255 max
-        Builder& skinning(size_t boneCount, Bone const* bones) noexcept;
-        Builder& skinning(size_t boneCount, math::mat4f const* transforms) noexcept;
-        Builder& morphing(bool enable) noexcept; // false by default
+        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices, size_t offset, size_t count) noexcept; //!< \overload
+        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices) noexcept; //!< \overload
 
-        // Sets an ordering index for blended primitives that all live at the same Z value.
-        Builder& blendOrder(size_t index, uint16_t order) noexcept; // 0 by default
+        /**
+         * Binds a material instance to the specified primitive.
+         *
+         * If no material is specified for a given primitive, Filament will fall back to a basic default material.
+         *
+         * @param index zero-based index of the primitive, must be less than the count passed to Builder constructor
+         * @param materialInstance the material to bind
+         */
+        Builder& material(size_t index, MaterialInstance const* materialInstance) noexcept;
+
+        /**
+         * The axis aligned bounding box of the renderable.
+         *
+         * This is an object-space AABB used for frustum culling. For skinning and morphing,
+         * this should encompass all possible vertex positions. It is mandatory unless culling is
+         * disabled for the renderable.
+         */
+        Builder& boundingBox(const Box& axisAlignedBoundingBox) noexcept;
+
+        /**
+         * Sets bits in a visibility mask. By default, this is 0x1.
+         *
+         * This feature provides a simple mechanism for hiding and showing groups of renderables
+         * in a Scene. See View::setVisibleLayers().
+         *
+         * For example, to set bit 1 and reset bits 0 and 2 while leaving all other bits unaffected,
+         * do: `builder.layerMask(7, 2)`.
+         *
+         * To change this at run time, see RenderableManager::setLayerMask.
+         *
+         * @param select the set of bits to affect
+         * @param values the replacement values for the affected bits
+         */
+        Builder& layerMask(uint8_t select, uint8_t values) noexcept;
+
+        /**
+         * Provides coarse-grained control over draw order.
+         *
+         * In general Filament reserves the right to re-order renderables to allow for efficient
+         * rendering. However clients can control ordering at a coarse level using \c priority.
+         *
+         * For example, this could be used to draw a semitransparent HUD, if a client wishes to
+         * avoid using a separate View for the HUD. Note that priority is completely orthogonal to
+         * Builder::layerMask, which merely controls visibility.
+         *
+         * See also Builder::blendOrder().
+         *
+         * The priority is clamped to the range [0..7], defaults to 4; 7 is lowest priority
+         * (rendered last).
+         */
+        Builder& priority(uint8_t priority) noexcept;
+
+        /**
+         * Controls frustum culling, true by default.
+         *
+         * \note this is not backface culling, which is controlled via the material.
+         */
+        Builder& culling(bool enable) noexcept;
+
+        /**
+         * Controls if this renderable casts shadows, false by default.
+         */
+        Builder& castShadows(bool enable) noexcept;
+
+        /**
+         * Controls if this renderable receives shadows, true by default.
+         */
+        Builder& receiveShadows(bool enable) noexcept;
+
+        /**
+         * Enables GPU vertex skinning for up to 255 bones, 0 by default.
+         *
+         * Each vertex can be affected by up to 4 bones simultaneously. The attached
+         * VertexBuffer must provide data in the \c BONE_INDICES slot (uvec4) and the
+         * \c BONE_WEIGHTS slot (float4).
+         *
+         * See also RenderableManager::setBones(), which can be called on a per-frame basis
+         * to advance the animation.
+         *
+         * @param boneCount 0 to disable, otherwise the number of bone transforms (up to 255)
+         * @param transforms the initial set of transforms (one for each bone)
+         */
+        Builder& skinning(size_t boneCount, math::mat4f const* transforms) noexcept;
+        Builder& skinning(size_t boneCount, Bone const* bones) noexcept; //!< \overload
+        Builder& skinning(size_t boneCount) noexcept; //!< \overload
+
+        /**
+         * Controls if the renderable has morph targets, false by default.
+         *
+         * This is required to enable GPU morphing. Additionally, the attached VertexBuffer must
+         * provide data in the appropriate VertexAttribute slots (\c MORPH_POSITION_0 etc).
+         *
+         * See also RenderableManager::setMorphWeights(), which can be called on a per-frame basis
+         * to advance the animation.
+         */
+        Builder& morphing(bool enable) noexcept;
+
+        /**
+         * Sets an ordering index for blended primitives that all live at the same Z value.
+         *
+         * @param index the primitive of interest
+         * @param order draw order number (0 by default)
+         */
+        Builder& blendOrder(size_t index, uint16_t order) noexcept;
 
         /**
          * Adds the Renderable component to an entity.
@@ -129,25 +292,68 @@ public:
         };
     };
 
-    // destroys this component from the given entity
+    /**
+     * Destroys the renderable component in the given entity.
+     */
     void destroy(utils::Entity e) noexcept;
 
+    /**
+     * Changes bounding box used for frustum culling.
+     *
+     * See also Builder::boundingBox().
+     */
     void setAxisAlignedBoundingBox(Instance instance, const Box& aabb) noexcept;
 
-    // See View::setVisibleLayers
+    /**
+     * Changes the visibility bits.
+     *
+     * See also Builder::layerMask() and View::setVisibleLayers().
+     */
     void setLayerMask(Instance instance, uint8_t select, uint8_t values) noexcept;
 
+    /**
+     * Changes the coarse-level draw ordering.
+     *
+     * See also Builder::priority().
+     */
     void setPriority(Instance instance, uint8_t priority) noexcept;
+
+    /**
+     * Changes whether or not the primitive casts shadows.
+     *
+     * See also Builder::castShadows().
+     */
     void setCastShadows(Instance instance, bool enable) noexcept;
+
+    /**
+     * Changes whether or not the primitive can receive shadows.
+     *
+     * See also Builder::receiveShadows().
+     */
     void setReceiveShadows(Instance instance, bool enable) noexcept;
+
+    /**
+     * Checks if the renderable can cast shadows. See also Builder::castShadows().
+     */
     bool isShadowCaster(Instance instance) const noexcept;
+
+    /**
+     * Checks if the renderable can receive shadows. See also Builder::receiveShadows().
+     */
     bool isShadowReceiver(Instance instance) const noexcept;
 
-    // Updates the bone transforms in the range [offset, offset + boneCount).
-    // The bones must be pre-allocated using Builder::skinning().
+    /**
+     * Updates the bone transforms in the range [offset, offset + boneCount).
+     * The bones must be pre-allocated using Builder::skinning().
+     */
     void setBones(Instance instance, Bone const* transforms, size_t boneCount = 1, size_t offset = 0) noexcept;
-    void setBones(Instance instance, math::mat4f const* transforms, size_t boneCount = 1, size_t offset = 0) noexcept;
+    void setBones(Instance instance, math::mat4f const* transforms, size_t boneCount = 1, size_t offset = 0) noexcept; //!< \overload
 
+    /**
+     * TBD -- eyeball
+     *
+     * See also Builder::morphing().
+     */
     void setMorphWeights(Instance instance, math::float4 const& weights) noexcept;
 
     // getters...
